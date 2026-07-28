@@ -7,9 +7,7 @@ import threading
 import subprocess
 import shutil
 
-# ========== ВСТАВЬ СВОЙ ТОКЕН СЮДА ==========
 TOKEN = "8874751043:AAE7o4-XhKGdsttEwlkMilx-nqwA-yNBE2I"
-# =============================================
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -70,7 +68,7 @@ def compress_video(input_path, output_path, target_mb=48):
             continue
     return False
 
-# ---------- Скачивание видео ----------
+# ---------- Скачивание видео (исправленная) ----------
 def download_video(url):
     ydl_opts = {
         'outtmpl': 'video.%(ext)s',
@@ -89,7 +87,15 @@ def download_video(url):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            if info is None:
+                raise Exception("Не удалось получить информацию о видео. Проверьте ссылку.")
             filename = ydl.prepare_filename(info)
+            if not filename:
+                # если prepare_filename вернул None, ищем вручную
+                for f in os.listdir('.'):
+                    if f.startswith('video.') and f.endswith('.mp4'):
+                        return f
+                raise Exception("Файл не найден после загрузки.")
             if not os.path.exists(filename):
                 for f in os.listdir('.'):
                     if f.startswith('video.') and f.endswith('.mp4'):
@@ -97,9 +103,9 @@ def download_video(url):
                         break
             return filename
     except Exception as e:
-        raise e
+        raise Exception(f"Ошибка при загрузке видео: {str(e)}")
 
-# ---------- Скачивание аудио ----------
+# ---------- Скачивание аудио (исправленная) ----------
 def download_audio(url):
     ydl_opts = {
         'outtmpl': 'audio.%(ext)s',
@@ -117,16 +123,18 @@ def download_audio(url):
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if not os.path.exists(filename):
-                for f in os.listdir('.'):
-                    if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
-                        filename = f
-                        break
-            return filename
+            info = ydl.extract_info(url, download=False)  # не скачиваем, только информация
+            if info is None:
+                raise Exception("Не удалось получить информацию об аудио. Проверьте ссылку.")
+            # теперь скачиваем аудио
+            ydl.download([url])
+            # ищем файл
+            for f in os.listdir('.'):
+                if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
+                    return f
+            raise Exception("Аудиофайл не найден после загрузки.")
     except Exception as e:
-        raise e
+        raise Exception(f"Ошибка при загрузке аудио: {str(e)}")
 
 # ---------- Команда /start ----------
 @bot.message_handler(commands=['start', 'help'])
