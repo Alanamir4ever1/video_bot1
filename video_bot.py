@@ -6,11 +6,8 @@ import time
 import threading
 import subprocess
 import shutil
-import sys
 
-# ========== ВСТАВЬ СВОЙ ТОКЕН ==========
 TOKEN = "8874751043:AAE7o4-XhKGdsttEwlkMilx-nqwA-yNBE2I"
-# ======================================
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -70,11 +67,11 @@ def compress_video(input_path, output_path, target_mb=48):
             continue
     return False
 
-# ---------- Упрощённая загрузка видео ----------
+# ---------- Улучшенная загрузка видео ----------
 def download_video(url):
-    # Настройки для yt-dlp
+    # Настройки для yt-dlp (с поддержкой Shorts)
     ydl_opts = {
-        'outtmpl': 'video.%(ext)s',      # имя файла
+        'outtmpl': 'video.%(ext)s',
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'quiet': True,
@@ -82,35 +79,40 @@ def download_video(url):
         'ignoreerrors': True,
         'noplaylist': True,
         'ffmpeg_location': FFMPEG_PATH,
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls'],  # пропускаем DASH и HLS потоки
+            }
+        },
     }
     try:
-        # Пробуем скачать через yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Сначала получаем информацию, чтобы узнать точное имя файла
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                raise Exception("Не удалось получить информацию о видео.")
+            # Пытаемся скачать
             ydl.download([url])
-        # Ищем скачанный файл
-        for f in os.listdir('.'):
-            if f.startswith('video.') and f.endswith('.mp4'):
-                return f
-        raise Exception("Файл не найден после загрузки.")
-    except Exception as e:
-        # Если не получилось с видео+аудио, пробуем скачать только видео (без звука)
-        try:
-            ydl_opts_simple = {
-                'outtmpl': 'video.%(ext)s',
-                'format': 'bestvideo[ext=mp4]',
-                'quiet': True,
-                'no_warnings': True,
-                'ignoreerrors': True,
-                'noplaylist': True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts_simple) as ydl:
-                ydl.download([url])
+            # Ждём 2 секунды, чтобы файл точно создался
+            time.sleep(2)
+            # Ищем файл
             for f in os.listdir('.'):
-                if f.startswith('video.') and f.endswith('.mp4'):
+                if f.startswith('video.') and (f.endswith('.mp4') or f.endswith('.webm') or f.endswith('.mkv')):
+                    # Если это webm или mkv — переименуем в mp4 (если ffmpeg есть)
+                    if not f.endswith('.mp4') and FFMPEG_PATH:
+                        new_name = f.replace('.webm', '.mp4').replace('.mkv', '.mp4')
+                        cmd = [FFMPEG_PATH, '-i', f, '-c', 'copy', new_name]
+                        subprocess.run(cmd, check=True, capture_output=True)
+                        os.remove(f)
+                        return new_name
                     return f
-            raise Exception("Файл не найден даже при упрощённой загрузке.")
-        except Exception as e2:
-            raise Exception(f"Ошибка загрузки: {str(e2)}")
+            # Если не нашли — пробуем искать любые файлы
+            for f in os.listdir('.'):
+                if f.startswith('video.') and os.path.getsize(f) > 1000:
+                    return f
+            raise Exception("Файл не найден даже после загрузки.")
+    except Exception as e:
+        raise Exception(f"Ошибка загрузки видео: {str(e)}")
 
 # ---------- Упрощённая загрузка аудио ----------
 def download_audio(url):
@@ -127,14 +129,20 @@ def download_audio(url):
         'ignoreerrors': True,
         'noplaylist': True,
         'ffmpeg_location': FFMPEG_PATH,
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls'],
+            }
+        },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        for f in os.listdir('.'):
-            if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
-                return f
-        raise Exception("Аудиофайл не найден.")
+            time.sleep(2)
+            for f in os.listdir('.'):
+                if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
+                    return f
+            raise Exception("Аудиофайл не найден.")
     except Exception as e:
         raise Exception(f"Ошибка загрузки аудио: {str(e)}")
 
@@ -149,7 +157,7 @@ def send_help(message):
         "🤖 Отправь мне ссылку на видео с YouTube, TikTok, Instagram и др.\n"
         "Если видео больше 50 МБ — я сожму его.\n"
         "Под видео будет кнопка для извлечения аудио.\n\n"
-        "⚠️ Файлы больше 200 МБ могут не сжаться."
+        "⚠️ Для YouTube Shorts может потребоваться время."
     )
 
 # ---------- Обработка ссылок ----------
