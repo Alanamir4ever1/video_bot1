@@ -4,16 +4,36 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 import time
 import threading
+import subprocess
+import shutil
 
-TOKEN = "8874751043:AAE7o4-XhKGdsttEwlkMilx-nqwA-yNBE2I"  # замени на токен от @BotFather
+# ========== ВСТАВЬ СВОЙ ТОКЕН СЮДА ==========
+TOKEN = "8874751043:AAE7o4-XhKGdsttEwlkMilx-nqwA-yNBE2I"
+# =============================================
 
 bot = telebot.TeleBot(TOKEN)
 
-# Хранилище ссылок для кнопок (временное)
+# ---------- Поиск ffmpeg ----------
+def find_ffmpeg():
+    ffmpeg_path = shutil.which('ffmpeg')
+    if ffmpeg_path:
+        return ffmpeg_path
+    possible_paths = [
+        r'C:\ffmpeg\bin\ffmpeg.exe',
+        r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+        r'C:\Windows\System32\ffmpeg.exe'
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+FFMPEG_PATH = find_ffmpeg()
+
+# ---------- Хранилище ссылок ----------
 video_storage = {}
 storage_lock = threading.Lock()
 
-# Очистка старых записей (раз в час)
 def clean_storage():
     while True:
         time.sleep(3600)
@@ -22,14 +42,33 @@ def clean_storage():
 
 threading.Thread(target=clean_storage, daemon=True).start()
 
-# ---------- Проверка ffmpeg ----------
-def check_ffmpeg():
-    import subprocess
-    try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        return True
-    except:
+# ---------- Сжатие видео ----------
+def compress_video(input_path, output_path, target_mb=48):
+    if not FFMPEG_PATH:
         return False
+    bitrates = ['1M', '500k', '300k', '200k']
+    for br in bitrates:
+        try:
+            cmd = [
+                FFMPEG_PATH,
+                '-i', input_path,
+                '-c:v', 'libx264',
+                '-b:v', br,
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-preset', 'fast',
+                '-y',
+                output_path
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+            if os.path.exists(output_path):
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                if size_mb <= target_mb:
+                    return True
+        except Exception as e:
+            print(f"Сжатие с битрейтом {br} не удалось: {e}")
+            continue
+    return False
 
 # ---------- Скачивание видео ----------
 def download_video(url):
@@ -45,7 +84,7 @@ def download_video(url):
         'no_warnings': True,
         'ignoreerrors': True,
         'noplaylist': True,
-        'ffmpeg_location': None,
+        'ffmpeg_location': FFMPEG_PATH,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -74,14 +113,12 @@ def download_audio(url):
         'no_warnings': True,
         'ignoreerrors': True,
         'noplaylist': True,
-        'ffmpeg_location': None,
+        'ffmpeg_location': FFMPEG_PATH,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            # у mp3 расширение .mp3, а не .m4a
-            base, _ = os.path.splitext(filename)
             if not os.path.exists(filename):
                 for f in os.listdir('.'):
                     if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
@@ -94,25 +131,25 @@ def download_audio(url):
 # ---------- Команда /start ----------
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
-    if not check_ffmpeg():
+    if not FFMPEG_PATH:
         bot.reply_to(
             message,
-            "⚠️ Для работы бота требуется **ffmpeg**.\n"
-            "Установи его и добавь в PATH."
+            "❌ ffmpeg не найден. Убедись, что он установлен."
         )
         return
     bot.reply_to(
         message,
         "🤖 Отправь мне ссылку на видео с YouTube, TikTok, Instagram и др.\n"
-        "Я скачаю видео со звуком, а под ним будет кнопка для извлечения аудио.\n\n"
-        "⚠️ Файлы больше 50 МБ не отправляются."
+        "Если видео больше 50 МБ — я автоматически сожму его.\n"
+        "Под видео будет кнопка для извлечения аудио.\n\n"
+        "⚠️ Файлы больше 200 МБ могут не сжаться."
     )
 
 # ---------- Обработка ссылок ----------
 @bot.message_handler(func=lambda msg: msg.text and (msg.text.startswith('http://') or msg.text.startswith('https://')))
 def handle_video_link(message):
     url = message.text.strip()
-    if not check_ffmpeg():
+    if not FFMPEG_PATH:
         bot.reply_to(message, "❌ ffmpeg не найден. Установи его.")
         return
 
@@ -120,18 +157,31 @@ def handle_video_link(message):
 
     try:
         video_file = download_video(url)
-        size = os.path.getsize(video_file)
-        if size > 50 * 1024 * 1024:
-            bot.reply_to(message, f"❌ Видео слишком большое ({size/1024/1024:.1f} МБ).")
+        size_mb = os.path.getsize(video_file) / (1024 * 1024)
+
+        if size_mb > 50:
+            bot.reply_to(message, f"📦 Видео весит {size_mb:.1f} МБ. Начинаю сжатие до 48 МБ...")
+            compressed_file = f"compressed_{int(time.time())}_{video_file}"
+            if compress_video(video_file, compressed_file):
+                os.remove(video_file)
+                video_file = compressed_file
+                new_size = os.path.getsize(video_file) / (1024 * 1024)
+                bot.reply_to(message, f"✅ Сжатие успешно! Новый размер: {new_size:.1f} МБ.")
+            else:
+                bot.reply_to(message, "❌ Не удалось сжать видео до 50 МБ.")
+                os.remove(video_file)
+                return
+
+        final_size = os.path.getsize(video_file) / (1024 * 1024)
+        if final_size > 50:
+            bot.reply_to(message, f"❌ Видео слишком большое ({final_size:.1f} МБ).")
             os.remove(video_file)
             return
 
-        # Сохраняем ссылку для кнопки
         with storage_lock:
             vid = str(int(time.time())) + str(message.chat.id)
             video_storage[vid] = url
 
-        # Отправляем видео с кнопкой
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🎵 Извлечь аудио", callback_data=f"audio_{vid}"))
 
@@ -142,9 +192,8 @@ def handle_video_link(message):
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка загрузки: {e}")
-        # удаляем временные файлы
         for f in os.listdir('.'):
-            if f.startswith('video.') or f.startswith('audio.'):
+            if f.startswith('video.') or f.startswith('compressed_') or f.startswith('audio.'):
                 try:
                     os.remove(f)
                 except:
@@ -154,12 +203,11 @@ def handle_video_link(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('audio_'))
 def handle_audio_callback(call):
     bot.answer_callback_query(call.id, "⏳ Извлекаю аудио...")
-
     vid = call.data.split('_')[1]
     with storage_lock:
         url = video_storage.get(vid)
         if not url:
-            bot.send_message(call.message.chat.id, "❌ Ссылка уже неактивна. Попробуй отправить видео заново.")
+            bot.send_message(call.message.chat.id, "❌ Ссылка уже неактивна.")
             return
 
     try:
@@ -174,14 +222,11 @@ def handle_audio_callback(call):
             bot.send_audio(call.message.chat.id, f, caption="🎵 Аудио готово!")
 
         os.remove(audio_file)
-
-        # удаляем ссылку из хранилища
         with storage_lock:
             del video_storage[vid]
 
     except Exception as e:
         bot.send_message(call.message.chat.id, f"❌ Ошибка извлечения аудио: {e}")
-        # удаляем временные файлы
         for f in os.listdir('.'):
             if f.startswith('audio.'):
                 try:
@@ -196,5 +241,5 @@ def unknown_message(message):
 
 # ---------- Запуск ----------
 if __name__ == "__main__":
-    print("🤖 Бот для скачивания видео и аудио запущен.")
+    print("🤖 Бот запущен. Ожидаю ссылки...")
     bot.infinity_polling()
