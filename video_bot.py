@@ -6,8 +6,11 @@ import time
 import threading
 import subprocess
 import shutil
+import sys
 
+# ========== ВСТАВЬ СВОЙ ТОКЕН ==========
 TOKEN = "8874751043:AAE7o4-XhKGdsttEwlkMilx-nqwA-yNBE2I"
+# ======================================
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -63,21 +66,17 @@ def compress_video(input_path, output_path, target_mb=48):
                 size_mb = os.path.getsize(output_path) / (1024 * 1024)
                 if size_mb <= target_mb:
                     return True
-        except Exception as e:
-            print(f"Сжатие с битрейтом {br} не удалось: {e}")
+        except Exception:
             continue
     return False
 
-# ---------- Скачивание видео (исправленная) ----------
+# ---------- Упрощённая загрузка видео ----------
 def download_video(url):
+    # Настройки для yt-dlp
     ydl_opts = {
-        'outtmpl': 'video.%(ext)s',
-        'format': 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': 'video.%(ext)s',      # имя файла
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
-        'postprocessors': [{
-            'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',
-        }],
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': True,
@@ -85,31 +84,39 @@ def download_video(url):
         'ffmpeg_location': FFMPEG_PATH,
     }
     try:
+        # Пробуем скачать через yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if info is None:
-                raise Exception("Не удалось получить информацию о видео. Проверьте ссылку.")
-            filename = ydl.prepare_filename(info)
-            if not filename:
-                # если prepare_filename вернул None, ищем вручную
-                for f in os.listdir('.'):
-                    if f.startswith('video.') and f.endswith('.mp4'):
-                        return f
-                raise Exception("Файл не найден после загрузки.")
-            if not os.path.exists(filename):
-                for f in os.listdir('.'):
-                    if f.startswith('video.') and f.endswith('.mp4'):
-                        filename = f
-                        break
-            return filename
+            ydl.download([url])
+        # Ищем скачанный файл
+        for f in os.listdir('.'):
+            if f.startswith('video.') and f.endswith('.mp4'):
+                return f
+        raise Exception("Файл не найден после загрузки.")
     except Exception as e:
-        raise Exception(f"Ошибка при загрузке видео: {str(e)}")
+        # Если не получилось с видео+аудио, пробуем скачать только видео (без звука)
+        try:
+            ydl_opts_simple = {
+                'outtmpl': 'video.%(ext)s',
+                'format': 'bestvideo[ext=mp4]',
+                'quiet': True,
+                'no_warnings': True,
+                'ignoreerrors': True,
+                'noplaylist': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts_simple) as ydl:
+                ydl.download([url])
+            for f in os.listdir('.'):
+                if f.startswith('video.') and f.endswith('.mp4'):
+                    return f
+            raise Exception("Файл не найден даже при упрощённой загрузке.")
+        except Exception as e2:
+            raise Exception(f"Ошибка загрузки: {str(e2)}")
 
-# ---------- Скачивание аудио (исправленная) ----------
+# ---------- Упрощённая загрузка аудио ----------
 def download_audio(url):
     ydl_opts = {
         'outtmpl': 'audio.%(ext)s',
-        'format': 'bestaudio/best',
+        'format': 'bestaudio',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -123,32 +130,24 @@ def download_audio(url):
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)  # не скачиваем, только информация
-            if info is None:
-                raise Exception("Не удалось получить информацию об аудио. Проверьте ссылку.")
-            # теперь скачиваем аудио
             ydl.download([url])
-            # ищем файл
-            for f in os.listdir('.'):
-                if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
-                    return f
-            raise Exception("Аудиофайл не найден после загрузки.")
+        for f in os.listdir('.'):
+            if f.startswith('audio.') and (f.endswith('.mp3') or f.endswith('.m4a')):
+                return f
+        raise Exception("Аудиофайл не найден.")
     except Exception as e:
-        raise Exception(f"Ошибка при загрузке аудио: {str(e)}")
+        raise Exception(f"Ошибка загрузки аудио: {str(e)}")
 
 # ---------- Команда /start ----------
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
     if not FFMPEG_PATH:
-        bot.reply_to(
-            message,
-            "❌ ffmpeg не найден. Убедись, что он установлен."
-        )
+        bot.reply_to(message, "⚠️ ffmpeg не найден. Установи его.")
         return
     bot.reply_to(
         message,
         "🤖 Отправь мне ссылку на видео с YouTube, TikTok, Instagram и др.\n"
-        "Если видео больше 50 МБ — я автоматически сожму его.\n"
+        "Если видео больше 50 МБ — я сожму его.\n"
         "Под видео будет кнопка для извлечения аудио.\n\n"
         "⚠️ Файлы больше 200 МБ могут не сжаться."
     )
@@ -158,25 +157,25 @@ def send_help(message):
 def handle_video_link(message):
     url = message.text.strip()
     if not FFMPEG_PATH:
-        bot.reply_to(message, "❌ ffmpeg не найден. Установи его.")
+        bot.reply_to(message, "❌ ffmpeg не найден.")
         return
 
-    bot.reply_to(message, "⏳ Начинаю загрузку видео...")
+    bot.reply_to(message, "⏳ Загружаю видео...")
 
     try:
         video_file = download_video(url)
         size_mb = os.path.getsize(video_file) / (1024 * 1024)
 
         if size_mb > 50:
-            bot.reply_to(message, f"📦 Видео весит {size_mb:.1f} МБ. Начинаю сжатие до 48 МБ...")
-            compressed_file = f"compressed_{int(time.time())}_{video_file}"
-            if compress_video(video_file, compressed_file):
+            bot.reply_to(message, f"📦 Видео {size_mb:.1f} МБ. Сжимаю...")
+            compressed = f"compressed_{int(time.time())}_{video_file}"
+            if compress_video(video_file, compressed):
                 os.remove(video_file)
-                video_file = compressed_file
+                video_file = compressed
                 new_size = os.path.getsize(video_file) / (1024 * 1024)
-                bot.reply_to(message, f"✅ Сжатие успешно! Новый размер: {new_size:.1f} МБ.")
+                bot.reply_to(message, f"✅ Сжато! Новый размер: {new_size:.1f} МБ.")
             else:
-                bot.reply_to(message, "❌ Не удалось сжать видео до 50 МБ.")
+                bot.reply_to(message, "❌ Не удалось сжать.")
                 os.remove(video_file)
                 return
 
@@ -199,7 +198,7 @@ def handle_video_link(message):
         os.remove(video_file)
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка загрузки: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {e}")
         for f in os.listdir('.'):
             if f.startswith('video.') or f.startswith('compressed_') or f.startswith('audio.'):
                 try:
@@ -207,7 +206,7 @@ def handle_video_link(message):
                 except:
                     pass
 
-# ---------- Колбэк для извлечения аудио ----------
+# ---------- Колбэк для аудио ----------
 @bot.callback_query_handler(func=lambda call: call.data.startswith('audio_'))
 def handle_audio_callback(call):
     bot.answer_callback_query(call.id, "⏳ Извлекаю аудио...")
@@ -215,7 +214,7 @@ def handle_audio_callback(call):
     with storage_lock:
         url = video_storage.get(vid)
         if not url:
-            bot.send_message(call.message.chat.id, "❌ Ссылка уже неактивна.")
+            bot.send_message(call.message.chat.id, "❌ Ссылка устарела.")
             return
 
     try:
@@ -234,7 +233,7 @@ def handle_audio_callback(call):
             del video_storage[vid]
 
     except Exception as e:
-        bot.send_message(call.message.chat.id, f"❌ Ошибка извлечения аудио: {e}")
+        bot.send_message(call.message.chat.id, f"❌ Ошибка: {e}")
         for f in os.listdir('.'):
             if f.startswith('audio.'):
                 try:
@@ -242,12 +241,11 @@ def handle_audio_callback(call):
                 except:
                     pass
 
-# ---------- Обработка других сообщений ----------
+# ---------- Остальное ----------
 @bot.message_handler(func=lambda msg: True)
 def unknown_message(message):
-    bot.reply_to(message, "❌ Отправь ссылку на видео (начинается с http:// или https://).")
+    bot.reply_to(message, "❌ Отправь ссылку (http:// или https://).")
 
-# ---------- Запуск ----------
 if __name__ == "__main__":
     print("🤖 Бот запущен. Ожидаю ссылки...")
     bot.infinity_polling()
